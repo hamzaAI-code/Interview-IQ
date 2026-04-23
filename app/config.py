@@ -15,6 +15,7 @@ class Settings:
     google_api_key: str
     gemini_model_fast: str
     gemini_model_pro: str
+    gemini_model_lite: str
 
     neo4j_uri: str
     neo4j_user: str
@@ -38,6 +39,7 @@ def get_settings() -> Settings:
         google_api_key=os.getenv("GOOGLE_API_KEY", ""),
         gemini_model_fast=os.getenv("GEMINI_MODEL_FAST", "gemini-2.5-flash"),
         gemini_model_pro=os.getenv("GEMINI_MODEL_PRO", "gemini-2.5-pro"),
+        gemini_model_lite=os.getenv("GEMINI_MODEL_LITE", "gemini-2.5-flash-lite"),
         neo4j_uri=os.getenv("NEO4J_URI", "bolt://localhost:7687"),
         neo4j_user=os.getenv("NEO4J_USER", "neo4j"),
         neo4j_password=os.getenv("NEO4J_PASSWORD", "interview_agent_pw"),

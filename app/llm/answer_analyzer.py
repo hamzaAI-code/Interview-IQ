@@ -44,6 +44,7 @@ async def analyze_answer(
         prompt=user,
         schema=AnalysisResult,
         system=ANALYSIS_SYSTEM,
-        model=settings.gemini_model_fast,
+        model=settings.gemini_model_lite,
         temperature=0.1,
+        thinking_budget=0,   # mechanical scoring — disable Gemini internal reasoning
     )

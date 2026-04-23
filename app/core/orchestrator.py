@@ -1,6 +1,7 @@
 """Interview orchestrator: state machine driving topic selection and follow-ups."""
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import AsyncIterator
 from uuid import uuid4
@@ -18,6 +19,30 @@ from app.llm.question_generator import generate_question, stream_question
 from app.utils.logger import get_logger
 
 log = get_logger(__name__)
+
+
+# Short-answer patterns that bypass the LLM analyzer.
+_EVASIVE_PHRASES = {
+    "i don't know", "i dont know", "no idea", "not sure", "pass", "skip",
+    "no", "idk", "dunno", "can't say", "cannot say", "next",
+}
+
+
+def _cheap_analysis(answer: str) -> AnalysisResult | None:
+    """Return a synthetic AnalysisResult for obvious non-answers, else None."""
+    stripped = answer.strip()
+    lowered = stripped.lower().rstrip(".!?")
+    if len(stripped) < 25 or lowered in _EVASIVE_PHRASES:
+        return AnalysisResult(
+            correctness=0.0,
+            depth=0.0,
+            relevance=0.0,
+            coverage_delta=0.0,
+            contradiction=False,
+            evasive=True,
+            follow_up_hint="candidate did not engage — next question should probe a concrete sub-area of the topic or confirm the gap.",
+        )
+    return None
 
 
 class Orchestrator:
@@ -94,28 +119,91 @@ class Orchestrator:
             hint = topic.contradictions[-1]
         return ("followup", hint)
 
+    def _pop_prefetched(self) -> str | None:
+        """Return prefetched question if it matches the current topic index, else None."""
+        if (
+            self.state.prefetched_question
+            and self.state.prefetched_for_idx is not None
+            and self.state.prefetched_for_idx == self.state.current_idx
+        ):
+            q = self.state.prefetched_question
+            self.state.prefetched_question = ""
+            self.state.prefetched_for_idx = None
+            return q
+        # Otherwise discard any stale prefetch
+        if self.state.prefetched_question:
+            self.state.prefetched_question = ""
+            self.state.prefetched_for_idx = None
+        return None
+
     async def next_question(self) -> str:
         assert self.state and self.state.current is not None, "interview not active"
+        cached = self._pop_prefetched()
+        if cached is not None:
+            return cached
         mode, hint = self._question_mode()
         return await generate_question(self.state, self.state.current, mode, hint)
 
     def stream_next_question(self) -> AsyncIterator[str]:
-        """Returns an async iterator the UI can drain."""
+        """Returns an async iterator the UI can drain.
+
+        If a speculative prefetch matches the current topic, yields it in one chunk
+        (the user sees the full question instantly instead of a token-by-token stream).
+        """
         assert self.state and self.state.current is not None, "interview not active"
+        cached = self._pop_prefetched()
+        if cached is not None:
+            async def _from_cache() -> AsyncIterator[str]:
+                yield cached
+            return _from_cache()
         mode, hint = self._question_mode()
         return stream_question(self.state, self.state.current, mode, hint)
+
+    def _should_advance(self, analysis: AnalysisResult, topic: TopicState) -> bool:
+        """Pure predicate: would we advance past this topic given this analysis? No side effects."""
+        # A contradiction always buys at least one more follow-up (up to cap).
+        if analysis.contradiction and topic.attempts < self.state.max_followups:
+            return False
+        coverage_met = topic.coverage >= self.state.threshold
+        attempts_capped = topic.attempts >= self.state.max_followups
+        return coverage_met or attempts_capped
 
     async def submit_answer(self, question: str, answer: str) -> AnalysisResult:
         assert self.state and self.state.current is not None, "no active topic"
         topic = self.state.current
         topic.attempts += 1
 
-        analysis = await analyze_answer(
-            topic_name=topic.name,
-            candidate_claims=topic.candidate_claims,
-            question=question,
-            answer=answer,
-        )
+        # (#5) Short-answer bypass — don't spend an LLM round-trip on obvious non-answers.
+        cheap = _cheap_analysis(answer)
+
+        # Speculative prefetch (#3/#8): while the analyzer runs, pre-generate the
+        # opening question for the NEXT topic. If we ultimately advance, the user
+        # sees the next question with zero extra latency. If we stay on this topic
+        # (follow-up needed), we cancel and discard the speculative task.
+        next_idx = (self.state.current_idx or 0) + 1
+        speculative: asyncio.Task | None = None
+        if next_idx < len(self.state.topics):
+            next_topic = self.state.topics[next_idx]
+            speculative = asyncio.create_task(
+                generate_question(self.state, next_topic, mode="opening")
+            )
+
+        if cheap is not None:
+            analysis = cheap
+        else:
+            try:
+                analysis = await analyze_answer(
+                    topic_name=topic.name,
+                    candidate_claims=topic.candidate_claims,
+                    question=question,
+                    answer=answer,
+                )
+            except Exception:
+                if speculative:
+                    speculative.cancel()
+                raise
+
+        # Update in-memory state from analysis result
         score = analysis.composite_score()
         topic.qa.append((question, answer, score))
         topic.coverage = min(1.0, topic.coverage + max(0.0, analysis.coverage_delta))
@@ -125,40 +213,54 @@ class Orchestrator:
             if parts:
                 topic.contradictions.append(" | ".join(parts))
 
-        # Persist Q&A on the topic in graph
-        await record_qa(
-            self.state.session_id,
-            topic.name,
-            question,
-            answer,
-            score,
-            analysis.contradiction,
-            datetime.now(timezone.utc).isoformat(),
-        )
+        # (#4) Fire-and-forget the audit-trail write so we don't block the critical path.
+        asyncio.create_task(self._safe_record_qa(topic.name, question, answer, score, analysis.contradiction))
 
-        await self._maybe_advance(analysis)
+        advancing = self._should_advance(analysis, topic)
+
+        # Consume or discard the speculative prefetch.
+        if speculative is not None:
+            if advancing:
+                try:
+                    self.state.prefetched_question = await speculative
+                    self.state.prefetched_for_idx = next_idx
+                except Exception as e:
+                    log.warning("speculative prefetch failed: %s", e)
+                    self.state.prefetched_question = ""
+                    self.state.prefetched_for_idx = None
+            else:
+                speculative.cancel()
+
+        if advancing:
+            await self._execute_advance()
+
         return analysis
 
-    async def _maybe_advance(self, analysis: AnalysisResult) -> None:
+    async def _safe_record_qa(
+        self, topic_name: str, question: str, answer: str, score: float, contradiction: bool
+    ) -> None:
+        try:
+            await record_qa(
+                self.state.session_id,  # type: ignore[union-attr]
+                topic_name,
+                question,
+                answer,
+                score,
+                contradiction,
+                datetime.now(timezone.utc).isoformat(),
+            )
+        except Exception as e:  # audit-trail write; don't surface to UI
+            log.warning("record_qa failed (non-fatal): %s", e)
+
+    async def _execute_advance(self) -> None:
         topic = self.state.current  # type: ignore[union-attr]
         assert topic is not None
-
-        # Always probe at least one follow-up if a contradiction is detected
-        if analysis.contradiction and topic.attempts < self.state.max_followups:
-            return
-
-        coverage_met = topic.coverage >= self.state.threshold
-        attempts_capped = topic.attempts >= self.state.max_followups
-        if not (coverage_met or attempts_capped):
-            return
-
         topic.status = "done"
         try:
             await compress_completed_topic(self.state, topic)
         except Exception as e:
             log.warning("topic compression failed: %s", e)
 
-        # Advance pointer
         next_idx = (self.state.current_idx or 0) + 1
         if next_idx >= len(self.state.topics):
             self.state.current_idx = None

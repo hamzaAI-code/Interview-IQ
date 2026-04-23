@@ -43,6 +43,10 @@ class InterviewState:
     max_followups: int = 3
     finished: bool = False
     jd_title: str = ""
+    # Speculative prefetch: opening question for the NEXT topic, pre-generated
+    # while the analyzer ran. Consumed only if we actually advance to that topic.
+    prefetched_question: str = ""
+    prefetched_for_idx: int | None = None
 
     @property
     def current(self) -> TopicState | None:
