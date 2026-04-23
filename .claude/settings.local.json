@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(///wsl.localhost/Ubuntu-24.04/home/hamza/**)",
+      "Bash(wsl -d Ubuntu-24.04 -- bash -c 'cd /home/hamza/Interview-Agent && python3 -m compileall -q app/ 2>&1')",
+      "Bash(docker info *)",
+      "Bash(docker compose *)"
+    ]
+  }
+}
