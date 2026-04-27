@@ -87,8 +87,9 @@ def render_sidebar() -> None:
             star = " ★" if t.must_have else ""
             st.markdown(f"**{icon} {t.name}**{star}")
             st.progress(min(t.coverage, 1.0))
+            clar = f" · clar {t.clarification_count}" if t.clarification_count else ""
             st.caption(
-                f"imp {t.importance:.1f} · attempts {t.attempts} · score {t.avg_score():.2f}"
+                f"imp {t.importance:.1f} · attempts {t.attempts}{clar} · score {t.avg_score():.2f}"
             )
         st.divider()
         st.metric("Overall score", f"{state.overall_score():.2f}")
@@ -181,10 +182,13 @@ def render_interview() -> None:
         st.session_state.history.append({"role": "user", "content": answer})
         try:
             with st.spinner("Analyzing…"):
-                analysis = runner.run(
+                outcome = runner.run(
                     orch.submit_answer(st.session_state.current_question, answer)
                 )
+            analysis = outcome.analysis
             st.session_state.last_analysis = {
+                "response_type": outcome.response_type,
+                "attempt_consumed": outcome.attempt_consumed,
                 "score": analysis.composite_score(),
                 "correctness": analysis.correctness,
                 "depth": analysis.depth,
@@ -195,7 +199,16 @@ def render_interview() -> None:
                 "evasive": analysis.evasive,
                 "follow_up_hint": analysis.follow_up_hint,
             }
-            st.session_state.current_question = None
+            # Always show any agent-generated text (clarifications, wrap-up on terminate).
+            if outcome.clarification_text:
+                st.session_state.history.append({
+                    "role": "assistant",
+                    "content": outcome.clarification_text,
+                })
+            if not outcome.keep_current_question:
+                # Real answer / dodge / terminate: clear so next iteration either
+                # streams a new question or renders the final evaluation.
+                st.session_state.current_question = None
         except Exception as e:
             st.session_state.error = f"Answer processing failed: {e}"
             st.exception(e)

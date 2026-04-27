@@ -38,20 +38,37 @@ def _retry():
     )
 
 
+def _build_config(
+    *,
+    system: str | None,
+    temperature: float,
+    thinking_budget: int | None,
+    response_schema: type | None = None,
+) -> types.GenerateContentConfig:
+    kwargs: dict = {
+        "system_instruction": system,
+        "temperature": temperature,
+    }
+    if thinking_budget is not None:
+        kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=thinking_budget)
+    if response_schema is not None:
+        kwargs["response_mime_type"] = "application/json"
+        kwargs["response_schema"] = response_schema
+    return types.GenerateContentConfig(**kwargs)
+
+
 async def generate_text(
     prompt: str,
     *,
     system: str | None = None,
     model: str | None = None,
     temperature: float = 0.4,
+    thinking_budget: int | None = None,
 ) -> str:
     """One-shot text generation."""
     settings = get_settings()
     client = get_client()
-    cfg = types.GenerateContentConfig(
-        system_instruction=system,
-        temperature=temperature,
-    )
+    cfg = _build_config(system=system, temperature=temperature, thinking_budget=thinking_budget)
     async for attempt in _retry():
         with attempt:
             resp = await client.aio.models.generate_content(
@@ -70,15 +87,14 @@ async def generate_structured(
     system: str | None = None,
     model: str | None = None,
     temperature: float = 0.2,
+    thinking_budget: int | None = None,
 ) -> T:
     """Structured JSON generation; returns a parsed Pydantic model."""
     settings = get_settings()
     client = get_client()
-    cfg = types.GenerateContentConfig(
-        system_instruction=system,
-        temperature=temperature,
-        response_mime_type="application/json",
-        response_schema=schema,
+    cfg = _build_config(
+        system=system, temperature=temperature,
+        thinking_budget=thinking_budget, response_schema=schema,
     )
     async for attempt in _retry():
         with attempt:
@@ -101,14 +117,12 @@ async def generate_stream(
     system: str | None = None,
     model: str | None = None,
     temperature: float = 0.4,
+    thinking_budget: int | None = None,
 ) -> AsyncIterator[str]:
     """Streamed text generation. Yields incremental chunks."""
     settings = get_settings()
     client = get_client()
-    cfg = types.GenerateContentConfig(
-        system_instruction=system,
-        temperature=temperature,
-    )
+    cfg = _build_config(system=system, temperature=temperature, thinking_budget=thinking_budget)
     stream = await client.aio.models.generate_content_stream(
         model=model or settings.gemini_model_fast,
         contents=prompt,

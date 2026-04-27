@@ -23,6 +23,7 @@ class TopicState:
     coverage: float = 0.0                # 0..1, advances when new signal added
     depth: float = 0.0                   # 0..1, max depth observed
     attempts: int = 0
+    clarification_count: int = 0         # non-answer turns (clarif/meta/off_topic) consumed on this topic
     contradictions: list[str] = field(default_factory=list)
     qa: list[tuple[str, str, float]] = field(default_factory=list)  # (q, a, score)
     status: TopicStatus = "pending"
@@ -43,6 +44,13 @@ class InterviewState:
     max_followups: int = 3
     finished: bool = False
     jd_title: str = ""
+    # Speculative-prefetch slot: opening question for the NEXT topic, generated
+    # in parallel with the analyzer. Consumed only if we actually advance to it.
+    prefetched_question: str = ""
+    prefetched_for_idx: int | None = None
+    # Compact candidate profile fetched once at session start (graph -> dict).
+    # Used to power meta-question replies without bloating every analyzer prompt.
+    candidate_profile: dict | None = None
 
     @property
     def current(self) -> TopicState | None:
