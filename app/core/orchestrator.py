@@ -17,7 +17,7 @@ from app.graph.builder import (
     ingest_resume_depth,
 )
 from app.graph.matcher import derive_topics, record_qa
-from app.graph.profile import get_candidate_profile
+from app.graph.profile import get_candidate_profile, get_jd_profile
 from app.graph.schema import ensure_schema, wipe_session
 from app.llm.answer_analyzer import AnalysisResult, analyze_answer
 from app.llm.clarifier import generate_meta_response
@@ -117,10 +117,11 @@ class Orchestrator:
 
         _, jg, _ = await asyncio.gather(core_task, jd_task, depth_task)
 
-        # Fetch candidate profile + derive topics in parallel — both read-only on the same data.
-        topic_rows, profile = await asyncio.gather(
+        # Fetch candidate profile + JD profile + derive topics in parallel — all read-only.
+        topic_rows, profile, jd_profile = await asyncio.gather(
             derive_topics(session_id, max_topics=self.settings.max_topics),
             get_candidate_profile(session_id),
+            get_jd_profile(session_id),
         )
 
         topics = [
@@ -148,11 +149,16 @@ class Orchestrator:
             max_followups=self.settings.max_followups,
             finished=not topics,
             candidate_profile=profile or {},
+            jd_profile=jd_profile or {},
         )
         if topics:
             topics[0].status = "active"
-        log.info("session=%s topics=%d profile_skills=%d",
-                 session_id, len(topics), len((profile or {}).get("skills") or []))
+        log.info(
+            "session=%s topics=%d profile_skills=%d jd_reqs=%d",
+            session_id, len(topics),
+            len((profile or {}).get("skills") or []),
+            len((jd_profile or {}).get("requirements") or []),
+        )
         return self.state
 
     async def cleanup(self) -> None:
@@ -317,10 +323,19 @@ class Orchestrator:
                     speculative.cancel()
 
                 if rtype == "meta_question":
-                    # Graph-on-demand: build a content-rich response from the profile.
+                    # Graph-on-demand: build a content-rich response anchored in
+                    # full resume + JD + the current topic's specific projects/experiences.
+                    current_topic_dict = {
+                        "name": topic.name,
+                        "candidate_claims": topic.candidate_claims,
+                        "projects": topic.projects,
+                        "experiences": topic.experiences,
+                    }
                     try:
                         clarif = await generate_meta_response(
                             profile=self.state.candidate_profile or {},
+                            jd_profile=self.state.jd_profile or {},
+                            current_topic=current_topic_dict,
                             original_question=question,
                             user_msg=answer,
                             rolling_summary=self.state.rolling_summary or "",

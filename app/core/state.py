@@ -51,6 +51,9 @@ class InterviewState:
     # Compact candidate profile fetched once at session start (graph -> dict).
     # Used to power meta-question replies without bloating every analyzer prompt.
     candidate_profile: dict | None = None
+    # Compact JD profile (title + ranked requirements). Used by meta-question
+    # responses so the agent can answer "what's this role for?" with specifics.
+    jd_profile: dict | None = None
 
     @property
     def current(self) -> TopicState | None:

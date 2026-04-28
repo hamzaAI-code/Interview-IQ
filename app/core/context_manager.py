@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from app.core.state import InterviewState, TopicState
+from app.graph.profile import format_profile
 from app.llm.gemini_client import generate_text
 
 
@@ -42,15 +43,30 @@ def _fmt_experiences(topic: TopicState) -> str:
 
 def build_question_vars(state: InterviewState, topic: TopicState,
                         mode: str, followup_hint: str = "") -> dict:
+    has_topic_evidence = bool(
+        topic.has_evidence
+        or (topic.projects and any((p.get("name") or "").strip() for p in topic.projects))
+        or (topic.experiences and any((e.get("role") or "").strip() for e in topic.experiences))
+    )
+    # Only show the broader resume profile when the current topic is a gap.
+    # Saves ~250 tokens on every non-gap question (the common case) while still
+    # giving the model material to bridge from for gap topics.
+    if has_topic_evidence:
+        broader_block = "(not needed — this topic has direct evidence above; anchor the question there)"
+    else:
+        broader_block = format_profile(state.candidate_profile or {}, max_chars=900)
+
     return {
         "topic_name": topic.name,
         "jd_weight": int(topic.importance),
         "must_have": topic.must_have,
+        "is_gap_topic": not has_topic_evidence,
         "years": f"{topic.years:.1f}" if topic.years else "(not stated)",
         "proficiency": topic.proficiency or "(not stated)",
         "evidence_text": (topic.evidence_text or "(none)")[:240],
         "projects_block": _fmt_projects(topic),
         "experiences_block": _fmt_experiences(topic),
+        "candidate_profile_block": broader_block,
         "rolling_summary": state.rolling_summary or "(empty)",
         "recent_turns": recent_turns(topic),
         "mode": mode,

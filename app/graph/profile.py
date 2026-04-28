@@ -67,6 +67,108 @@ async def get_candidate_profile(session_id: str) -> dict:
     }
 
 
+_JD_PROFILE_CYPHER = """
+MATCH (j:JobDescription {session_id: $sid})
+OPTIONAL MATCH (j)-[r:REQUIRES]->(req)
+WITH j, collect(DISTINCT CASE WHEN req IS NULL THEN null ELSE {
+        name: req.name,
+        kind: labels(req)[0],
+        priority: coalesce(r.priority, 3),
+        must_have: coalesce(r.must_have, false)
+     } END) AS reqs_raw
+OPTIONAL MATCH (j)-[:CONTAINS]->(rl:Requirement)
+WITH j, reqs_raw, collect(DISTINCT rl.text) AS lines_raw
+RETURN coalesce(j.title, 'Role') AS title,
+       [r IN reqs_raw WHERE r IS NOT NULL] AS requirements,
+       [l IN lines_raw WHERE l IS NOT NULL][..10] AS requirement_lines
+"""
+
+
+async def get_jd_profile(session_id: str) -> dict:
+    """Fetch a compact JD snapshot for use in meta-question responses."""
+    rows = await run(_JD_PROFILE_CYPHER, sid=session_id)
+    if not rows:
+        log.warning("no JD profile found for session=%s", session_id)
+        return {}
+    row = rows[0]
+    # Sort requirements: must_have first, then by priority desc, cap at 15.
+    reqs = sorted(
+        row.get("requirements") or [],
+        key=lambda r: (
+            0 if r.get("must_have") else 1,
+            -int(r.get("priority") or 3),
+        ),
+    )[:15]
+    return {
+        "title": row.get("title") or "Role",
+        "requirements": reqs,
+        "requirement_lines": row.get("requirement_lines") or [],
+    }
+
+
+def format_jd_profile(jd: dict, max_chars: int = 800) -> str:
+    """Render the JD profile as compact prose for an LLM prompt."""
+    if not jd:
+        return "(no JD profile available)"
+    lines: list[str] = [f"Title: {jd.get('title') or 'Role'}"]
+
+    reqs = jd.get("requirements") or []
+    must = [r for r in reqs if r.get("must_have")]
+    nice = [r for r in reqs if not r.get("must_have")]
+    if must:
+        lines.append("Must-have requirements:")
+        for r in must[:8]:
+            lines.append(f"  - {r.get('name')} ({r.get('kind','Skill').lower()}, p{r.get('priority')})")
+    if nice:
+        lines.append("Nice-to-have / other:")
+        for r in nice[:8]:
+            lines.append(f"  - {r.get('name')} ({r.get('kind','Skill').lower()}, p{r.get('priority')})")
+
+    rl = jd.get("requirement_lines") or []
+    if rl:
+        lines.append("Raw requirement lines:")
+        for ln in rl[:5]:
+            lines.append(f"  - {ln[:140]}")
+
+    text = "\n".join(lines)
+    return text[:max_chars]
+
+
+def format_current_topic(topic: dict, max_chars: int = 600) -> str:
+    """Compact rendering of the topic the question was anchored to."""
+    if not topic:
+        return "(no current topic)"
+    lines = [f"Topic: {topic.get('name')}"]
+    claims = (topic.get("candidate_claims") or "").strip()
+    if claims:
+        lines.append(f"Candidate claims on this topic: {claims[:240]}")
+
+    projects = topic.get("projects") or []
+    if projects:
+        lines.append("Projects on resume that used this topic:")
+        for p in projects[:4]:
+            name = (p.get("name") or "").strip()
+            summary = (p.get("summary") or "").strip()
+            if not name:
+                continue
+            lines.append(f"  - {name}: {summary[:140]}" if summary else f"  - {name}")
+
+    experiences = topic.get("experiences") or []
+    if experiences:
+        lines.append("Experiences on resume that used this topic:")
+        for e in experiences[:4]:
+            role = (e.get("role") or "").strip()
+            company = (e.get("company") or "").strip()
+            summary = (e.get("summary") or "").strip()
+            if not role:
+                continue
+            head = f"{role}" + (f" @ {company}" if company else "")
+            lines.append(f"  - {head}: {summary[:140]}" if summary else f"  - {head}")
+
+    text = "\n".join(lines)
+    return text[:max_chars]
+
+
 def format_profile(profile: dict, max_chars: int = 1200) -> str:
     """Render the profile as compact prose for an LLM prompt."""
     if not profile:
