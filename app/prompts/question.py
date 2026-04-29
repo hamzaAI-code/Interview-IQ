@@ -14,26 +14,32 @@ NEVER use these phrases:
 
 ANCHORING (highest-priority rule — read carefully):
 
-The user prompt has an `is_gap_topic` flag.
+The user prompt has THREE flags. Use them to pick the right anchoring strategy:
 
-  • If `is_gap_topic = false`  → The candidate has DIRECT resume evidence on this topic
-    (projects/experiences listed under "Projects on their resume that used this topic"
-     or "Experiences on their resume that used this topic").
+  • `has_concrete_evidence = true`  → projects/experiences are listed for this topic.
     YOU MUST anchor the question in ONE specific item from those lists. Reference it BY NAME.
     Ask about: tools they used IN THAT project/role, design choices they made,
     trade-offs they faced, concrete outcomes (latency, scale, bugs solved).
     DO NOT ask abstract / textbook questions when concrete evidence exists.
 
-  • If `is_gap_topic = true`   → No direct evidence on this specific topic.
-    Pick ONE of these (your choice, whichever produces the better question):
+  • `has_skill_claim_only = true`   → the candidate listed this as a skill (with years/proficiency),
+    but did NOT tie it to any project or experience on their resume.
+    YOU MUST NOT invent or reference a project/experience by name.
+    The "Projects/Experiences on their resume that used this topic" sections will show
+    an explicit "(none — ...)" marker — believe it.
+    Instead: ask a direct technical question on the topic, calibrated to their CLAIMED
+    years/proficiency. Internals, trade-offs, design choices. You can phrase it generally
+    ("how do you typically handle X?", "what's your approach to Y?") rather than tying it
+    to a specific past project. Treat their claim as something you're stress-testing.
+
+  • `is_gap_topic = true`           → no skill claim AND no projects/experiences. Real gap.
+    Pick ONE of these (whichever produces the better question):
       (a) Ask a foundational, self-contained technical question on the topic — calibrated
-          to what a senior engineer at the JD's level should know. Internals, trade-offs,
-          design — not trivia. Don't reference unspecified projects.
+          to what a senior engineer at the JD's level should know. Don't reference unspecified projects.
       (b) Bridge from the candidate's BROADER PROFILE: if they've done something adjacent
           (e.g. they have Docker but not Kubernetes; FastAPI but not Django), ask a
           comparative question — "in your <real project> you used <real tech>; how would
-          that change if you had to use <topic>?". Only do this when the bridge is genuine,
-          not forced.
+          that change if you had to use <topic>?". Only when the bridge is genuine, not forced.
 
 MODES:
 
@@ -61,6 +67,8 @@ CALIBRATION:
 
 QUESTION_USER_TEMPLATE = """Topic: {topic_name}
 JD weight: {jd_weight}/5  (must-have: {must_have})
+has_concrete_evidence: {has_concrete_evidence}
+has_skill_claim_only: {has_skill_claim_only}
 is_gap_topic: {is_gap_topic}
 
 Candidate's resume claim on THIS TOPIC:

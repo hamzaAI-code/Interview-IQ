@@ -1,32 +1,22 @@
-"""Interview orchestrator: state machine driving topic selection and follow-ups."""
+"""Interview orchestrator: state machine driving topic selection and follow-ups.
+
+Knows nothing about how the InterviewState was built — see app/services/session_builder.py
+for the parse/extract/ingest/topic pipeline. This module only runs the conversation.
+"""
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import AsyncIterator
-from uuid import uuid4
 
 from app.config import get_settings
 from app.core.context_manager import compress_completed_topic, recent_turns
 from app.core.state import InterviewState, TopicState
-from app.graph.builder import (
-    create_session,
-    ingest_jd,
-    ingest_resume_core,
-    ingest_resume_depth,
-)
-from app.graph.matcher import derive_topics, record_qa
-from app.graph.profile import get_candidate_profile, get_jd_profile
-from app.graph.schema import ensure_schema, wipe_session
+from app.graph.matcher import record_qa
 from app.llm.answer_analyzer import AnalysisResult, analyze_answer
 from app.llm.clarifier import generate_meta_response
 from app.llm.evaluator import EvaluationReport, final_evaluation
-from app.llm.extractors import (
-    extract_jd,
-    extract_resume_core,
-    extract_resume_depth,
-)
 from app.llm.question_generator import generate_question, stream_question
 from app.utils.logger import get_logger
 
@@ -71,99 +61,14 @@ class Orchestrator:
     def __init__(self) -> None:
         self.settings = get_settings()
         self.state: InterviewState | None = None
-        self._schema_ready = False
 
     # ---------- Lifecycle ----------
 
-    async def start(self, resume_text: str, jd_text: str) -> InterviewState:
-        """Build the session graph with maximum parallelism."""
-        session_id = uuid4().hex[:12]
-        log.info("starting session=%s", session_id)
-
-        schema_task: asyncio.Task | None = None
-        if not self._schema_ready:
-            schema_task = asyncio.create_task(ensure_schema())
-
-        core_extract = asyncio.create_task(extract_resume_core(resume_text))
-        depth_extract = asyncio.create_task(extract_resume_depth(resume_text))
-        jd_extract = asyncio.create_task(extract_jd(jd_text))
-
-        if schema_task is not None:
-            await schema_task
-            self._schema_ready = True
-
-        await create_session(session_id)
-
-        async def _core_pipeline():
-            core = await core_extract
-            await ingest_resume_core(session_id, core)
-            return core
-
-        async def _jd_pipeline():
-            jd = await jd_extract
-            await ingest_jd(session_id, jd)
-            return jd
-
-        core_task = asyncio.create_task(_core_pipeline())
-        jd_task = asyncio.create_task(_jd_pipeline())
-
-        async def _depth_pipeline():
-            depth = await depth_extract
-            await core_task
-            await ingest_resume_depth(session_id, depth)
-            return depth
-
-        depth_task = asyncio.create_task(_depth_pipeline())
-
-        _, jg, _ = await asyncio.gather(core_task, jd_task, depth_task)
-
-        # Fetch candidate profile + JD profile + derive topics in parallel — all read-only.
-        topic_rows, profile, jd_profile = await asyncio.gather(
-            derive_topics(session_id, max_topics=self.settings.max_topics),
-            get_candidate_profile(session_id),
-            get_jd_profile(session_id),
-        )
-
-        topics = [
-            TopicState(
-                name=row["name"],
-                importance=float(row["importance"]),
-                must_have=bool(row["must_have"]),
-                candidate_claims=row["candidate_claims"],
-                years=float(row.get("years") or 0.0),
-                proficiency=row.get("proficiency") or "",
-                evidence_text=row.get("evidence_text") or "",
-                projects=list(row.get("projects_list") or []),
-                experiences=list(row.get("experiences_list") or []),
-                has_evidence=bool(row.get("has_evidence", False)),
-            )
-            for row in topic_rows
-        ]
-
-        self.state = InterviewState(
-            session_id=session_id,
-            topics=topics,
-            current_idx=0 if topics else None,
-            jd_title=jg.role_title,
-            threshold=self.settings.coverage_threshold,
-            max_followups=self.settings.max_followups,
-            finished=not topics,
-            candidate_profile=profile or {},
-            jd_profile=jd_profile or {},
-        )
-        if topics:
-            topics[0].status = "active"
-        log.info(
-            "session=%s topics=%d profile_skills=%d jd_reqs=%d",
-            session_id, len(topics),
-            len((profile or {}).get("skills") or []),
-            len((jd_profile or {}).get("requirements") or []),
-        )
-        return self.state
-
-    async def cleanup(self) -> None:
-        if self.state:
-            await wipe_session(self.state.session_id)
+    def attach(self, state: InterviewState) -> None:
+        """Bind a pre-built InterviewState. Built by services.session_builder.build_session."""
+        self.state = state
+        log.info("orchestrator attached to session=%s topics=%d",
+                 state.session_id, len(state.topics))
 
     # ---------- Question / answer cycle ----------
 

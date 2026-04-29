@@ -13,9 +13,19 @@ def recent_turns(topic: TopicState, n: int = 2) -> str:
     return "\n".join(f"Q: {q}\nA: {a}" for q, a, _ in tail)
 
 
+_EMPTY_PROJECTS = (
+    "(none — this topic does NOT appear in any project on the candidate's resume; "
+    "do NOT pretend a project used it)"
+)
+_EMPTY_EXPERIENCES = (
+    "(none — this topic does NOT appear in any experience/role on the candidate's resume; "
+    "do NOT pretend a role used it)"
+)
+
+
 def _fmt_projects(topic: TopicState) -> str:
     if not topic.projects:
-        return "(none listed on resume for this topic)"
+        return _EMPTY_PROJECTS
     lines = []
     for p in topic.projects[:5]:
         name = (p.get("name") or "").strip()
@@ -23,12 +33,12 @@ def _fmt_projects(topic: TopicState) -> str:
         if not name:
             continue
         lines.append(f"- {name}: {summary[:200]}" if summary else f"- {name}")
-    return "\n".join(lines) if lines else "(none listed on resume for this topic)"
+    return "\n".join(lines) if lines else _EMPTY_PROJECTS
 
 
 def _fmt_experiences(topic: TopicState) -> str:
     if not topic.experiences:
-        return "(none listed on resume for this topic)"
+        return _EMPTY_EXPERIENCES
     lines = []
     for e in topic.experiences[:5]:
         role = (e.get("role") or "").strip()
@@ -38,21 +48,31 @@ def _fmt_experiences(topic: TopicState) -> str:
             continue
         head = f"{role}" + (f" @ {company}" if company else "")
         lines.append(f"- {head}: {summary[:200]}" if summary else f"- {head}")
-    return "\n".join(lines) if lines else "(none listed on resume for this topic)"
+    return "\n".join(lines) if lines else _EMPTY_EXPERIENCES
 
 
 def build_question_vars(state: InterviewState, topic: TopicState,
                         mode: str, followup_hint: str = "") -> dict:
-    has_topic_evidence = bool(
-        topic.has_evidence
-        or (topic.projects and any((p.get("name") or "").strip() for p in topic.projects))
+    # CONCRETE evidence = projects/experiences specifically tied to this topic.
+    # A bare :HAS_SKILL relationship doesn't count — the candidate listed the skill
+    # but didn't tie it to a project or role, so we have nothing concrete to anchor on.
+    has_concrete_evidence = bool(
+        (topic.projects and any((p.get("name") or "").strip() for p in topic.projects))
         or (topic.experiences and any((e.get("role") or "").strip() for e in topic.experiences))
     )
-    # Only show the broader resume profile when the current topic is a gap.
-    # Saves ~250 tokens on every non-gap question (the common case) while still
-    # giving the model material to bridge from for gap topics.
-    if has_topic_evidence:
-        broader_block = "(not needed — this topic has direct evidence above; anchor the question there)"
+    has_skill_claim = bool(
+        topic.has_evidence
+        or (topic.years and topic.years > 0)
+        or topic.proficiency
+        or topic.evidence_text
+    )
+
+    # Three states the prompt branches on:
+    #   - has_concrete_evidence  → MUST anchor in a specific project/experience
+    #   - has_skill_claim_only   → respect years/proficiency, but DO NOT invent projects
+    #   - is_gap_topic           → foundational question or genuine bridge
+    if has_concrete_evidence:
+        broader_block = "(not needed — this topic has concrete project/experience evidence above; anchor the question there)"
     else:
         broader_block = format_profile(state.candidate_profile or {}, max_chars=900)
 
@@ -60,7 +80,9 @@ def build_question_vars(state: InterviewState, topic: TopicState,
         "topic_name": topic.name,
         "jd_weight": int(topic.importance),
         "must_have": topic.must_have,
-        "is_gap_topic": not has_topic_evidence,
+        "is_gap_topic": not (has_concrete_evidence or has_skill_claim),
+        "has_concrete_evidence": has_concrete_evidence,
+        "has_skill_claim_only": (has_skill_claim and not has_concrete_evidence),
         "years": f"{topic.years:.1f}" if topic.years else "(not stated)",
         "proficiency": topic.proficiency or "(not stated)",
         "evidence_text": (topic.evidence_text or "(none)")[:240],

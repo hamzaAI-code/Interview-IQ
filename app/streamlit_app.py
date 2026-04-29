@@ -14,6 +14,7 @@ import streamlit as st
 from app.core.orchestrator import Orchestrator
 from app.services.jd_parser import parse_jd
 from app.services.resume_parser import parse_resume_bytes
+from app.services.session_builder import build_session, teardown_session
 from app.utils.async_runner import get_runner
 
 st.set_page_config(page_title="Technical Interview Agent", layout="wide", page_icon=":speech_balloon:")
@@ -65,7 +66,9 @@ def render_setup() -> None:
             with st.spinner("Extracting resume + JD, building knowledge graph, ranking topics…"):
                 resume_text = parse_resume_bytes(resume_file.getvalue(), resume_file.name)
                 jd_clean = parse_jd(jd_text)
-                runner.run(orch.start(resume_text, jd_clean))
+                # Setup pipeline lives outside the orchestrator now.
+                state = runner.run(build_session(resume_text, jd_clean))
+                orch.attach(state)
             st.session_state.setup_done = True
             st.rerun()
         except Exception as e:
@@ -96,7 +99,8 @@ def render_sidebar() -> None:
         st.caption(f"Session: `{state.session_id}`")
         if st.button("End & reset"):
             try:
-                runner.run(orch.cleanup())
+                if orch.state is not None:
+                    runner.run(teardown_session(orch.state.session_id))
             finally:
                 for k in list(st.session_state.keys()):
                     del st.session_state[k]

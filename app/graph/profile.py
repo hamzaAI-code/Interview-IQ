@@ -135,7 +135,13 @@ def format_jd_profile(jd: dict, max_chars: int = 800) -> str:
 
 
 def format_current_topic(topic: dict, max_chars: int = 600) -> str:
-    """Compact rendering of the topic the question was anchored to."""
+    """Compact rendering of the topic the question was anchored to.
+
+    Always renders the projects + experiences section labels, even when empty,
+    with an explicit "none — skill listed only" marker. The LLM needs to see
+    the absence as a fact (not as missing data) to avoid hallucinating ties
+    to projects in the broader profile that didn't actually use this topic.
+    """
     if not topic:
         return "(no current topic)"
     lines = [f"Topic: {topic.get('name')}"]
@@ -143,27 +149,27 @@ def format_current_topic(topic: dict, max_chars: int = 600) -> str:
     if claims:
         lines.append(f"Candidate claims on this topic: {claims[:240]}")
 
-    projects = topic.get("projects") or []
+    projects = [p for p in (topic.get("projects") or []) if (p.get("name") or "").strip()]
+    lines.append("Projects on resume that used this topic:")
     if projects:
-        lines.append("Projects on resume that used this topic:")
         for p in projects[:4]:
             name = (p.get("name") or "").strip()
             summary = (p.get("summary") or "").strip()
-            if not name:
-                continue
             lines.append(f"  - {name}: {summary[:140]}" if summary else f"  - {name}")
+    else:
+        lines.append("  (none — this topic appears in the candidate's skills list only, NOT tied to any specific project on their resume)")
 
-    experiences = topic.get("experiences") or []
+    experiences = [e for e in (topic.get("experiences") or []) if (e.get("role") or "").strip()]
+    lines.append("Experiences on resume that used this topic:")
     if experiences:
-        lines.append("Experiences on resume that used this topic:")
         for e in experiences[:4]:
             role = (e.get("role") or "").strip()
             company = (e.get("company") or "").strip()
             summary = (e.get("summary") or "").strip()
-            if not role:
-                continue
             head = f"{role}" + (f" @ {company}" if company else "")
             lines.append(f"  - {head}: {summary[:140]}" if summary else f"  - {head}")
+    else:
+        lines.append("  (none — this topic is NOT tied to any specific role/experience on their resume)")
 
     text = "\n".join(lines)
     return text[:max_chars]
