@@ -93,7 +93,7 @@ async def generate_meta_response(
         prompt=prompt,
         system=META_SYSTEM,
         model=settings.gemini_model_fast,
-        temperature=0.5,
+        temperature=0.0,
         thinking_budget=0,
     )
     return (text or "").strip()

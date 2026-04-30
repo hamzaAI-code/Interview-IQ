@@ -110,7 +110,8 @@ async def build_session(resume_text: str, jd_text: str) -> InterviewState:
         TopicState(
             name=row["name"],
             importance=float(row["importance"]),
-            must_have=bool(row["must_have"]),
+            must_have=bool(row.get("must_have", False)),
+            source=row.get("source", "jd"),
             candidate_claims=row["candidate_claims"],
             years=float(row.get("years") or 0.0),
             proficiency=row.get("proficiency") or "",
@@ -137,8 +138,10 @@ async def build_session(resume_text: str, jd_text: str) -> InterviewState:
         topics[0].status = "active"
 
     log.info(
-        "session=%s built topics=%d profile_skills=%d jd_reqs=%d",
+        "session=%s built topics=%d (jd=%d, resume=%d) profile_skills=%d jd_reqs=%d",
         session_id, len(topics),
+        sum(1 for t in topics if t.source == "jd"),
+        sum(1 for t in topics if t.source == "resume"),
         len((profile or {}).get("skills") or []),
         len((jd_profile or {}).get("requirements") or []),
     )
@@ -206,7 +209,8 @@ async def load_session(session_id: str) -> InterviewState:
         TopicState(
             name=row["name"],
             importance=float(row["importance"]),
-            must_have=bool(row["must_have"]),
+            must_have=bool(row.get("must_have", False)),
+            source=row.get("source", "jd"),
             candidate_claims=row["candidate_claims"],
             years=float(row.get("years") or 0.0),
             proficiency=row.get("proficiency") or "",

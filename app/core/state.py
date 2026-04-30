@@ -12,6 +12,7 @@ class TopicState:
     name: str
     importance: float
     must_have: bool = False
+    source: str = "jd"                   # "jd" or "resume" — where the topic was sourced from
     candidate_claims: str = ""           # short summary from resume graph (for UI)
     # Detailed claim evidence (used by question prompt to ground questions in resume):
     years: float = 0.0

@@ -50,13 +50,29 @@ class ExperienceEntry(BaseModel):
     company: str = ""
     years: float = 0.0
     summary: str = ""
-    used: list[str] = Field(default_factory=list, description="skill or tech names used")
+    used: list[str] = Field(default_factory=list, description="literal skill or tech names used")
+    capabilities: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Broader concept-level capabilities demonstrated in this role — what the work "
+            "actually involved beyond literal tech (e.g. 'model deployment', "
+            "'real-time inference', 'data pipeline orchestration', 'incident response')."
+        ),
+    )
 
 
 class ProjectEntry(BaseModel):
     name: str
     summary: str = ""
     technologies: list[str] = Field(default_factory=list)
+    capabilities: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Broader concept-level capabilities demonstrated in this project — what the work "
+            "actually involved beyond literal tech (e.g. 'retrieval augmented generation', "
+            "'vector search', 'distributed training', 'feature engineering')."
+        ),
+    )
 
 
 class ResumeCoreGraph(BaseModel):

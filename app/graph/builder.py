@@ -95,20 +95,34 @@ async def ingest_resume_core(session_id: str, core: ResumeCoreGraph) -> None:
 
 async def ingest_resume_depth(session_id: str, depth: ResumeDepthGraph) -> None:
     """Experiences + projects in ONE transaction. Pre-merges any names they
-    reference so no USED/USES edges are silently dropped."""
+    reference so no USED/USES edges are silently dropped. Also writes
+    Capability nodes + DEMONSTRATES edges so the matcher can find projects
+    that did the *kind of work* a JD topic asks about, even when literal
+    tech names don't overlap.
+    """
     exps = [
-        {"role": e.role, "company": e.company, "years": e.years,
-         "summary": e.summary, "used": [_norm(u) for u in e.used if u]}
+        {
+            "role": e.role,
+            "company": e.company,
+            "years": e.years,
+            "summary": e.summary,
+            "used": [_norm(u) for u in e.used if u],
+            "capabilities": [_norm(c) for c in e.capabilities if c],
+        }
         for e in depth.experiences if e.role
     ]
     projs = [
-        {"name": p.name, "summary": p.summary,
-         "technologies": [_norm(t) for t in p.technologies if t]}
+        {
+            "name": p.name,
+            "summary": p.summary,
+            "technologies": [_norm(t) for t in p.technologies if t],
+            "capabilities": [_norm(c) for c in p.capabilities if c],
+        }
         for p in depth.projects if p.name
     ]
 
-    # Every name referenced across all experiences + projects. Pre-merged as
-    # :Skill if no node with that name currently exists under any supported label.
+    # Every literal-tech name referenced across experiences + projects.
+    # Pre-merged as :Skill if no node with that name exists.
     ref_names = sorted({
         n for e in exps for n in e["used"] if n
     } | {
@@ -119,7 +133,7 @@ async def ingest_resume_depth(session_id: str, depth: ResumeDepthGraph) -> None:
         """
         MATCH (c:Candidate {session_id: $sid})
 
-        // Pre-merge any referenced name that doesn't already exist.
+        // Pre-merge any referenced literal name that doesn't already exist.
         CALL {
           UNWIND $ref_names AS refname
           OPTIONAL MATCH (existing)
@@ -130,7 +144,7 @@ async def ingest_resume_depth(session_id: str, depth: ResumeDepthGraph) -> None:
           )
         }
 
-        // Experiences + USED edges.
+        // Experiences + USED + DEMONSTRATES edges.
         CALL {
           WITH c
           UNWIND $exps AS e
@@ -139,17 +153,31 @@ async def ingest_resume_depth(session_id: str, depth: ResumeDepthGraph) -> None:
             years: e.years, summary: e.summary
           })
           MERGE (c)-[:WORKED_AS]->(x)
+
+          // USED — literal tech link
           WITH x, e
-          UNWIND e.used AS used_name
-          MATCH (n)
-            WHERE n.name = used_name
-              AND (n:Skill OR n:Technology OR n:Concept)
-          WITH x, collect(n)[0] AS target
-          WHERE target IS NOT NULL
-          MERGE (x)-[:USED]->(target)
+          CALL {
+            WITH x, e
+            UNWIND e.used AS used_name
+            OPTIONAL MATCH (n)
+              WHERE n.name = used_name
+                AND (n:Skill OR n:Technology OR n:Concept)
+            WITH x, collect(n)[0] AS target
+            WHERE target IS NOT NULL
+            MERGE (x)-[:USED]->(target)
+          }
+
+          // DEMONSTRATES — broader capability tags
+          WITH x, e
+          CALL {
+            WITH x, e
+            UNWIND coalesce(e.capabilities, []) AS cap_name
+            MERGE (cap:Capability {name: cap_name})
+            MERGE (x)-[:DEMONSTRATES]->(cap)
+          }
         }
 
-        // Projects + USES edges.
+        // Projects + USES + DEMONSTRATES edges.
         CALL {
           WITH c
           UNWIND $projs AS p
@@ -157,14 +185,26 @@ async def ingest_resume_depth(session_id: str, depth: ResumeDepthGraph) -> None:
             session_id: $sid, name: p.name, summary: p.summary
           })
           MERGE (c)-[:BUILT]->(pr)
+
           WITH pr, p
-          UNWIND p.technologies AS tname
-          MATCH (n)
-            WHERE n.name = tname
-              AND (n:Skill OR n:Technology OR n:Concept)
-          WITH pr, collect(n)[0] AS target
-          WHERE target IS NOT NULL
-          MERGE (pr)-[:USES]->(target)
+          CALL {
+            WITH pr, p
+            UNWIND p.technologies AS tname
+            OPTIONAL MATCH (n)
+              WHERE n.name = tname
+                AND (n:Skill OR n:Technology OR n:Concept)
+            WITH pr, collect(n)[0] AS target
+            WHERE target IS NOT NULL
+            MERGE (pr)-[:USES]->(target)
+          }
+
+          WITH pr, p
+          CALL {
+            WITH pr, p
+            UNWIND coalesce(p.capabilities, []) AS cap_name
+            MERGE (cap:Capability {name: cap_name})
+            MERGE (pr)-[:DEMONSTRATES]->(cap)
+          }
         }
         """,
         sid=session_id,
@@ -172,9 +212,11 @@ async def ingest_resume_depth(session_id: str, depth: ResumeDepthGraph) -> None:
         projs=projs,
         ref_names=ref_names,
     )
+
+    cap_count = sum(len(e["capabilities"]) for e in exps) + sum(len(p["capabilities"]) for p in projs)
     log.info(
-        "depth ingested session=%s experiences=%d projects=%d refs=%d",
-        session_id, len(exps), len(projs), len(ref_names),
+        "depth ingested session=%s experiences=%d projects=%d refs=%d capabilities=%d",
+        session_id, len(exps), len(projs), len(ref_names), cap_count,
     )
 
 

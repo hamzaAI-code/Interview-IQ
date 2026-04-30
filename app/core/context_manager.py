@@ -66,23 +66,39 @@ def build_question_vars(state: InterviewState, topic: TopicState,
         or topic.proficiency
         or topic.evidence_text
     )
+    has_skill_claim_only = has_skill_claim and not has_concrete_evidence
+    is_gap_topic = not (has_concrete_evidence or has_skill_claim)
 
     # Three states the prompt branches on:
     #   - has_concrete_evidence  → MUST anchor in a specific project/experience
     #   - has_skill_claim_only   → respect years/proficiency, but DO NOT invent projects
-    #   - is_gap_topic           → foundational question or genuine bridge
+    #                              AND do NOT combine with other skills (no broader profile shown)
+    #   - is_gap_topic           → foundational question or genuine bridge from CONCRETE evidence
     if has_concrete_evidence:
-        broader_block = "(not needed — this topic has concrete project/experience evidence above; anchor the question there)"
+        broader_block = (
+            "(not shown — this topic has concrete project/experience evidence above; "
+            "anchor the question there)"
+        )
+    elif has_skill_claim_only:
+        # Withhold the broader profile entirely. The LLM was using it to fabricate
+        # cross-skill scenarios ("you've worked with CNN and Kubernetes...") that aren't
+        # supported by the resume.
+        broader_block = (
+            "(intentionally withheld — focus the question on this SINGLE topic only; "
+            "do NOT combine with any other skill from the candidate's resume)"
+        )
     else:
+        # is_gap_topic = true: show the broader profile so the LLM can bridge from a
+        # CONCRETE adjacent skill (one that appears in a project/experience).
         broader_block = format_profile(state.candidate_profile or {}, max_chars=900)
 
     return {
         "topic_name": topic.name,
         "jd_weight": int(topic.importance),
         "must_have": topic.must_have,
-        "is_gap_topic": not (has_concrete_evidence or has_skill_claim),
+        "is_gap_topic": is_gap_topic,
         "has_concrete_evidence": has_concrete_evidence,
-        "has_skill_claim_only": (has_skill_claim and not has_concrete_evidence),
+        "has_skill_claim_only": has_skill_claim_only,
         "years": f"{topic.years:.1f}" if topic.years else "(not stated)",
         "proficiency": topic.proficiency or "(not stated)",
         "evidence_text": (topic.evidence_text or "(none)")[:240],

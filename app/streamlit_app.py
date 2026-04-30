@@ -136,7 +136,8 @@ def render_sidebar() -> None:
         for t in state.topics:
             icon = {"pending": "○", "active": "▶", "done": "✓", "skipped": "—"}[t.status]
             star = " ★" if t.must_have else ""
-            st.markdown(f"**{icon} {t.name}**{star}")
+            src_tag = "  · _from resume_" if t.source == "resume" else ""
+            st.markdown(f"**{icon} {t.name}**{star}{src_tag}")
             st.progress(min(t.coverage, 1.0))
             clar = f" · clar {t.clarification_count}" if t.clarification_count else ""
             st.caption(

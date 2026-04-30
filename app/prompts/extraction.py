@@ -40,6 +40,14 @@ Rules:
 - Names inside `used` / `technologies` MUST use the exact same lowercase canonical form as the candidate's skills list would use, so they can be linked.
 - BE EXHAUSTIVE — don't drop technologies from an experience/project to keep the list short.
 
+CAPABILITIES (important — populate these too):
+- For each project AND each experience, populate `capabilities`: a list of broader concept-level capabilities DEMONSTRATED through that work, beyond literal tech names.
+- These are 2-5 word phrases, lowercased, canonical, describing WHAT the work actually involved.
+- Examples (use as stylistic guide, not an enum — emit whatever fits the resume): "model deployment", "real-time inference", "model serving", "data pipeline orchestration", "vector search", "retrieval augmented generation", "stream processing", "distributed training", "feature engineering", "ml monitoring", "incident response", "api design", "containerization", "ci/cd automation", "kubernetes orchestration", "etl pipeline", "load balancing", "auth/authz design", "computer vision", "nlp pipelines", "embedding generation", "fine-tuning", "prompt engineering".
+- DRAW these from what the candidate actually did — the project/experience description must support each capability you list. Do NOT invent capabilities the resume doesn't support.
+- 3-8 capabilities per project; 2-5 per experience.
+- Capabilities can overlap with the literal tech list (e.g. "fastapi" in technologies AND "api design" in capabilities) — that's expected.
+
 RESUME:
 ---
 {resume_text}

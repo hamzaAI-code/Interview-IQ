@@ -67,8 +67,12 @@ class Orchestrator:
     def attach(self, state: InterviewState) -> None:
         """Bind a pre-built InterviewState. Built by services.session_builder.build_session."""
         self.state = state
-        log.info("orchestrator attached to session=%s topics=%d",
-                 state.session_id, len(state.topics))
+        log.info(
+            "orchestrator attached to session=%s topics=%d (jd=%d, resume=%d)",
+            state.session_id, len(state.topics),
+            sum(1 for t in state.topics if t.source == "jd"),
+            sum(1 for t in state.topics if t.source == "resume"),
+        )
 
     # ---------- Question / answer cycle ----------
 

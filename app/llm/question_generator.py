@@ -22,7 +22,7 @@ async def generate_question(
         prompt=user,
         system=QUESTION_SYSTEM,
         model=settings.gemini_model_fast,
-        temperature=0.6,
+        temperature=0.0,
     )
 
 
@@ -38,6 +38,6 @@ async def stream_question(
         prompt=user,
         system=QUESTION_SYSTEM,
         model=settings.gemini_model_fast,
-        temperature=0.6,
+        temperature=0.0,
     ):
         yield chunk
