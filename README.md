@@ -23,11 +23,35 @@ pip install -r requirements.txt
 cp .env.example .env
 # edit .env and set GOOGLE_API_KEY
 
-# 4. Run
+# 4a. Run the Streamlit UI
 streamlit run app/streamlit_app.py
+
+# 4b. (Optional) Run the HTTP API alongside Streamlit
+uvicorn app.api.main:app --reload --port 8000
 ```
 
-Open http://localhost:8501 (UI) and http://localhost:7474 (Neo4j Browser, user `neo4j` / pw from `.env`).
+Open:
+- http://localhost:8501 — Streamlit UI
+- http://localhost:8000/docs — interactive Swagger UI for the HTTP API
+- http://localhost:7474 — Neo4j Browser (user `neo4j` / pw from `.env`)
+
+### HTTP API endpoints
+
+```
+POST   /sessions/build              — build new session from JSON {resume_text, jd_text}
+POST   /sessions/build/upload       — build new session via multipart (resume file + jd_text)
+GET    /sessions                    — list all sessions in the graph
+POST   /sessions/{id}/load          — attach an existing graph session
+GET    /sessions/{id}               — get current InterviewState
+DELETE /sessions/{id}               — wipe + drop session
+
+POST   /sessions/{id}/questions/next         — generate next question
+POST   /sessions/{id}/questions/next/stream  — stream next question (SSE)
+POST   /sessions/{id}/answers                — submit answer, get TurnOutcome
+POST   /sessions/{id}/finalize               — produce final EvaluationReport
+```
+
+All request/response bodies are Pydantic-validated; see [app/api/schemas.py](app/api/schemas.py).
 
 ## Flow
 

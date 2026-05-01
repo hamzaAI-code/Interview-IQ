@@ -1,0 +1,174 @@
+"""Routes for session lifecycle: build, list, load, get, delete."""
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+
+from app.api.manager import SessionManager, get_session_manager
+from app.api.schemas import (
+    BuildSessionRequest,
+    SessionsListResponse,
+    SessionStateResponse,
+    SessionSummary,
+    TopicSummary,
+)
+from app.core.orchestrator import Orchestrator
+from app.services.jd_parser import parse_jd
+from app.services.resume_parser import parse_resume_bytes
+from app.services.session_builder import (
+    build_session,
+    list_sessions,
+    load_session,
+    teardown_session,
+)
+from app.utils.logger import get_logger
+
+log = get_logger(__name__)
+
+router = APIRouter(prefix="/sessions", tags=["sessions"])
+
+
+def _state_to_response(orch: Orchestrator) -> SessionStateResponse:
+    state = orch.state
+    assert state is not None
+    return SessionStateResponse(
+        session_id=state.session_id,
+        jd_title=state.jd_title or "Role",
+        finished=state.finished,
+        current_topic=(state.current.name if state.current else None),
+        threshold=state.threshold,
+        overall_score=state.overall_score(),
+        topics=[
+            TopicSummary(
+                name=t.name,
+                importance=t.importance,
+                must_have=t.must_have,
+                source=t.source,  # type: ignore[arg-type]
+                coverage=t.coverage,
+                depth=t.depth,
+                attempts=t.attempts,
+                clarification_count=t.clarification_count,
+                status=t.status,
+                avg_score=t.avg_score(),
+            )
+            for t in state.topics
+        ],
+    )
+
+
+@router.post(
+    "/build",
+    response_model=SessionStateResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Build a new session graph from resume + JD text",
+)
+async def build(
+    req: BuildSessionRequest,
+    mgr: SessionManager = Depends(get_session_manager),
+) -> SessionStateResponse:
+    state = await build_session(req.resume_text, req.jd_text)
+    orch = Orchestrator()
+    orch.attach(state)
+    await mgr.attach(orch)
+    return _state_to_response(orch)
+
+
+@router.post(
+    "/build/upload",
+    response_model=SessionStateResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Build a new session by uploading a resume file (PDF/DOCX/TXT) + JD text",
+)
+async def build_upload(
+    resume: UploadFile = File(..., description="PDF / DOCX / TXT resume file"),
+    jd_text: str = Form(..., min_length=20, max_length=50_000),
+    mgr: SessionManager = Depends(get_session_manager),
+) -> SessionStateResponse:
+    if not resume.filename:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Missing resume filename")
+    suffix = (resume.filename.rsplit(".", 1)[-1] or "").lower()
+    if suffix not in {"pdf", "docx", "doc", "txt", "md"}:
+        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                            f"Unsupported resume type: .{suffix}")
+    raw = await resume.read()
+    try:
+        resume_text = parse_resume_bytes(raw, resume.filename)
+    except Exception as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Could not parse resume: {e}")
+    state = await build_session(resume_text, parse_jd(jd_text))
+    orch = Orchestrator()
+    orch.attach(state)
+    await mgr.attach(orch)
+    return _state_to_response(orch)
+
+
+@router.get(
+    "",
+    response_model=SessionsListResponse,
+    summary="List all sessions in Neo4j (most recent first)",
+)
+async def list_all() -> SessionsListResponse:
+    rows = await list_sessions()
+    return SessionsListResponse(
+        sessions=[
+            SessionSummary(
+                id=r.get("id") or "",
+                started_at=r.get("started_at"),
+                candidate_name=r.get("candidate_name") or "Candidate",
+                jd_title=r.get("jd_title") or "Role",
+                topic_count=int(r.get("topic_count") or 0),
+            )
+            for r in rows
+        ]
+    )
+
+
+@router.post(
+    "/{session_id}/load",
+    response_model=SessionStateResponse,
+    summary="Attach an existing graph session to an in-memory Orchestrator",
+)
+async def load(
+    session_id: str,
+    mgr: SessionManager = Depends(get_session_manager),
+) -> SessionStateResponse:
+    try:
+        state = await load_session(session_id)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
+    orch = Orchestrator()
+    orch.attach(state)
+    await mgr.attach(orch)
+    return _state_to_response(orch)
+
+
+@router.get(
+    "/{session_id}",
+    response_model=SessionStateResponse,
+    summary="Read the current InterviewState (must be loaded into memory first)",
+)
+async def get_state(
+    session_id: str,
+    mgr: SessionManager = Depends(get_session_manager),
+) -> SessionStateResponse:
+    orch = await mgr.get(session_id)
+    if orch is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"Session '{session_id}' is not attached. Call POST /sessions/{session_id}/load first "
+            "(or POST /sessions/build for a new one).",
+        )
+    return _state_to_response(orch)
+
+
+@router.delete(
+    "/{session_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Tear down a session: wipe its graph subgraph and drop its in-memory orchestrator",
+)
+async def delete(
+    session_id: str,
+    mgr: SessionManager = Depends(get_session_manager),
+) -> None:
+    await teardown_session(session_id)
+    await mgr.remove(session_id)
+    return None
