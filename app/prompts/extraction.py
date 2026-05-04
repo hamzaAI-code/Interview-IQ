@@ -66,6 +66,13 @@ Rules:
 - Capture the role title if present.
 - Be exhaustive on technical asks; ignore boilerplate (benefits, EEO clauses, location).
 
+HARD OUTPUT LIMITS (keep the JSON small — exceeding any of these is a bug):
+- `requirements`: AT MOST 40 entries. Pick the most important if there are more.
+- `requirement_lines`: AT MOST 25 entries.
+- Each `requirement_lines` string: AT MOST 200 characters; one obligation per item, paraphrased — do NOT echo JD paragraphs verbatim.
+- `role_title`: AT MOST 80 characters.
+- Do NOT emit any keys not defined in the schema.
+
 JOB DESCRIPTION:
 ---
 {jd_text}

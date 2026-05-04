@@ -109,6 +109,13 @@ class JDGraph(BaseModel):
 _RESUME_CLIP = 30000
 _JD_CLIP = 20000
 
+# Hard ceilings on Gemini output. Each schema has small, bounded data; without
+# a cap the model occasionally over-generates (echoing JD paragraphs verbatim
+# into requirement_lines, hallucinating fields outside the schema, etc.) and
+# truncates mid-string at its internal limit, producing unparseable JSON.
+_RESUME_MAX_TOKENS = 8192
+_JD_MAX_TOKENS = 4096
+
 
 async def extract_resume_core(text: str) -> ResumeCoreGraph:
     settings = get_settings()
@@ -119,6 +126,7 @@ async def extract_resume_core(text: str) -> ResumeCoreGraph:
         model=settings.gemini_model_fast,
         temperature=0.1,
         thinking_budget=0,
+        max_output_tokens=_RESUME_MAX_TOKENS,
     )
 
 
@@ -131,6 +139,7 @@ async def extract_resume_depth(text: str) -> ResumeDepthGraph:
         model=settings.gemini_model_fast,
         temperature=0.1,
         thinking_budget=0,
+        max_output_tokens=_RESUME_MAX_TOKENS,
     )
 
 
@@ -143,4 +152,5 @@ async def extract_jd(text: str) -> JDGraph:
         model=settings.gemini_model_fast,
         temperature=0.1,
         thinking_budget=0,
+        max_output_tokens=_JD_MAX_TOKENS,
     )

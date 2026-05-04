@@ -30,6 +30,9 @@ from app.graph.neo4j_client import run
 from app.graph.profile import get_candidate_profile, get_jd_profile
 from app.graph.schema import ensure_schema, wipe_session
 from app.llm.extractors import (
+    JDGraph,
+    ResumeCoreGraph,
+    ResumeDepthGraph,
     extract_jd,
     extract_resume_core,
     extract_resume_depth,
@@ -150,6 +153,91 @@ async def build_session(
 
     log.info(
         "session=%s built topics=%d (jd=%d, resume=%d) profile_skills=%d jd_reqs=%d",
+        session_id, len(topics),
+        sum(1 for t in topics if t.source == "jd"),
+        sum(1 for t in topics if t.source == "resume"),
+        len((profile or {}).get("skills") or []),
+        len((jd_profile or {}).get("requirements") or []),
+    )
+    return state
+
+
+async def build_session_from_graphs(
+    core: ResumeCoreGraph,
+    depth: ResumeDepthGraph,
+    jd: JDGraph,
+    *,
+    session_id: str | None = None,
+) -> InterviewState:
+    """Same pipeline as build_session, but skip Gemini extraction.
+
+    Used by the /sessions/build/structured endpoint when the caller has
+    already produced the three graphs (e.g. tekprep parsed the resume + JD
+    upstream and adapted them via app.services.external_adapter). The rest
+    of the build — schema DDL, ingestion, topic derivation, profile fetch —
+    is identical to build_session, so the resulting InterviewState is
+    indistinguishable from the text-driven path.
+    """
+    settings = get_settings()
+    if not session_id:
+        session_id = uuid4().hex[:12]
+    log.info("building session=%s (structured input, no extraction)", session_id)
+
+    await _ensure_schema_once()
+    await create_session(session_id)
+
+    # Same per-side pipeline as build_session: core ingest happens first so
+    # depth can resolve skill/tech/concept names; JD ingest runs in parallel
+    # with the core ingest.
+    core_task = asyncio.create_task(ingest_resume_core(session_id, core))
+    jd_task = asyncio.create_task(ingest_jd(session_id, jd))
+
+    async def _depth_pipeline():
+        await core_task
+        await ingest_resume_depth(session_id, depth)
+
+    depth_task = asyncio.create_task(_depth_pipeline())
+    await asyncio.gather(core_task, jd_task, depth_task)
+
+    topic_rows, profile, jd_profile = await asyncio.gather(
+        derive_topics(session_id, max_topics=settings.max_topics),
+        get_candidate_profile(session_id),
+        get_jd_profile(session_id),
+    )
+
+    topics = [
+        TopicState(
+            name=row["name"],
+            importance=float(row["importance"]),
+            must_have=bool(row.get("must_have", False)),
+            source=row.get("source", "jd"),
+            candidate_claims=row["candidate_claims"],
+            years=float(row.get("years") or 0.0),
+            proficiency=row.get("proficiency") or "",
+            evidence_text=row.get("evidence_text") or "",
+            projects=list(row.get("projects_list") or []),
+            experiences=list(row.get("experiences_list") or []),
+            has_evidence=bool(row.get("has_evidence", False)),
+        )
+        for row in topic_rows
+    ]
+
+    state = InterviewState(
+        session_id=session_id,
+        topics=topics,
+        current_idx=0 if topics else None,
+        jd_title=jd.role_title,
+        threshold=settings.coverage_threshold,
+        max_followups=settings.max_followups,
+        finished=not topics,
+        candidate_profile=profile or {},
+        jd_profile=jd_profile or {},
+    )
+    if topics:
+        topics[0].status = "active"
+
+    log.info(
+        "session=%s built (structured) topics=%d (jd=%d, resume=%d) profile_skills=%d jd_reqs=%d",
         session_id, len(topics),
         sum(1 for t in topics if t.source == "jd"),
         sum(1 for t in topics if t.source == "resume"),

@@ -12,13 +12,19 @@ from app.api.schemas import (
     SessionsListResponse,
     SessionStateResponse,
     SessionSummary,
+    StructuredBuildRequest,
     TopicSummary,
 )
 from app.core.orchestrator import Orchestrator
+from app.services.external_adapter import (
+    tekprep_jd_to_graph,
+    tekprep_resume_to_graphs,
+)
 from app.services.jd_parser import parse_jd
 from app.services.resume_parser import parse_resume_bytes
 from app.services.session_builder import (
     build_session,
+    build_session_from_graphs,
     list_sessions,
     load_session,
     teardown_session,
@@ -55,6 +61,30 @@ async def _build_and_attach(
         await mgr.attach(orch)
     except Exception as exc:
         log.exception("background build failed for session=%s: %s", session_id, exc)
+
+
+async def _build_structured_and_attach(
+    mgr: SessionManager,
+    *,
+    req: StructuredBuildRequest,
+    session_id: str,
+) -> None:
+    """Same as _build_and_attach but for the pre-parsed (tekprep) input
+    shape. Skips Gemini extraction entirely."""
+    try:
+        core, depth = tekprep_resume_to_graphs(req.resume)
+        jd_graph = tekprep_jd_to_graph(req.jd, resume=req.resume)
+        state = await build_session_from_graphs(
+            core, depth, jd_graph, session_id=session_id,
+        )
+        orch = Orchestrator()
+        orch.attach(state)
+        await mgr.attach(orch)
+    except Exception as exc:
+        log.exception(
+            "background structured build failed for session=%s: %s",
+            session_id, exc,
+        )
 
 
 def _state_to_response(orch: Orchestrator) -> SessionStateResponse:
@@ -150,6 +180,49 @@ async def build_upload(
     except Exception as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Could not parse resume: {e}")
     state = await build_session(resume_text, parse_jd(jd_text))
+    orch = Orchestrator()
+    orch.attach(state)
+    await mgr.attach(orch)
+    return _state_to_response(orch)
+
+
+@router.post(
+    "/build/structured",
+    status_code=status.HTTP_201_CREATED,
+    summary="Build a new session graph from already-parsed resume + JD payload",
+    description=(
+        "Accepts the tekprep-shaped ResumeSchema + JDSchema instead of raw "
+        "text. Skips Gemini extraction entirely — the payload is adapted to "
+        "Interview-IQ's internal graph shape and ingested directly. Pass "
+        "`?background=true` for fire-and-forget (HTTP 202) — same semantics "
+        "as POST /sessions/build."
+    ),
+    response_model=None,
+)
+async def build_structured(
+    req: StructuredBuildRequest,
+    background_tasks: BackgroundTasks,
+    background: bool = Query(
+        default=False,
+        description="When true, build runs in the background after HTTP 202 returns.",
+    ),
+    mgr: SessionManager = Depends(get_session_manager),
+):
+    if background:
+        session_id = req.session_id or uuid4().hex[:12]
+        background_tasks.add_task(
+            _build_structured_and_attach,
+            mgr,
+            req=req,
+            session_id=session_id,
+        )
+        return BuildAcceptedResponse(session_id=session_id)
+
+    core, depth = tekprep_resume_to_graphs(req.resume)
+    jd_graph = tekprep_jd_to_graph(req.jd)
+    state = await build_session_from_graphs(
+        core, depth, jd_graph, session_id=req.session_id,
+    )
     orch = Orchestrator()
     orch.attach(state)
     await mgr.attach(orch)

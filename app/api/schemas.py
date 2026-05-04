@@ -10,6 +10,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.api.external_schemas import TekprepJDSchema, TekprepResumeSchema
+
 # ----------------------------- Requests -----------------------------
 
 
@@ -34,6 +36,27 @@ class BuildSessionRequest(BaseModel):
             "keyed by this id (used for cross-service correlation, e.g. when "
             "tekprep owns the session id and Interview-IQ runs the technical "
             "stage). When unset, the server generates one."
+        ),
+    )
+
+
+class StructuredBuildRequest(BaseModel):
+    """Build a new session graph from already-parsed (tekprep-shaped) data.
+
+    Use this when the upstream caller has already run resume / JD extraction
+    (e.g. tekprep parses both at upload time for its own intro stage). Skips
+    Interview-IQ's three Gemini extraction calls entirely — the data is
+    adapted into the internal graph shape and ingested directly.
+    """
+    resume: TekprepResumeSchema
+    jd: TekprepJDSchema
+    session_id: str | None = Field(
+        default=None,
+        min_length=4,
+        max_length=64,
+        description=(
+            "Optional caller-supplied session id. When set, the new graph "
+            "is keyed by this id (used for cross-service correlation)."
         ),
     )
 
