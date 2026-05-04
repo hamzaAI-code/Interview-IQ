@@ -1,7 +1,10 @@
 """Routes for session lifecycle: build, list, load, get, delete."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from uuid import uuid4
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile, status
+from pydantic import BaseModel
 
 from app.api.manager import SessionManager, get_session_manager
 from app.api.schemas import (
@@ -25,6 +28,33 @@ from app.utils.logger import get_logger
 log = get_logger(__name__)
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
+
+
+class BuildAcceptedResponse(BaseModel):
+    """202 reply for fire-and-forget builds. Caller already knows the
+    session_id (it supplied it); we just confirm acceptance."""
+    session_id: str
+    status: str = "accepted"
+
+
+async def _build_and_attach(
+    mgr: SessionManager,
+    *,
+    resume_text: str,
+    jd_text: str,
+    session_id: str,
+) -> None:
+    """Background-mode build — runs after the HTTP response has returned.
+    Builds the InterviewState and attaches it to the session manager so
+    subsequent /answers / /questions/next/stream calls find it. Logs and
+    swallows exceptions so a failed build doesn't blow up the worker."""
+    try:
+        state = await build_session(resume_text, jd_text, session_id=session_id)
+        orch = Orchestrator()
+        orch.attach(state)
+        await mgr.attach(orch)
+    except Exception as exc:
+        log.exception("background build failed for session=%s: %s", session_id, exc)
 
 
 def _state_to_response(orch: Orchestrator) -> SessionStateResponse:
@@ -57,15 +87,40 @@ def _state_to_response(orch: Orchestrator) -> SessionStateResponse:
 
 @router.post(
     "/build",
-    response_model=SessionStateResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Build a new session graph from resume + JD text",
+    description=(
+        "Synchronous build by default — returns the SessionStateResponse once "
+        "the graph is ready. Pass `?background=true` to fire-and-forget: the "
+        "build runs after the response is sent (HTTP 202 with the session_id), "
+        "and subsequent `/answers` calls block until the build finishes. Used "
+        "by tekprep so the voice intro can run in parallel with graph build."
+    ),
+    response_model=None,
 )
 async def build(
     req: BuildSessionRequest,
+    background_tasks: BackgroundTasks,
+    background: bool = Query(
+        default=False,
+        description="When true, build runs in the background after HTTP 202 returns.",
+    ),
     mgr: SessionManager = Depends(get_session_manager),
-) -> SessionStateResponse:
-    state = await build_session(req.resume_text, req.jd_text)
+):
+    if background:
+        # Caller MUST supply session_id in background mode — they need the id
+        # before the build finishes so they can call subsequent endpoints.
+        session_id = req.session_id or uuid4().hex[:12]
+        background_tasks.add_task(
+            _build_and_attach,
+            mgr,
+            resume_text=req.resume_text,
+            jd_text=req.jd_text,
+            session_id=session_id,
+        )
+        return BuildAcceptedResponse(session_id=session_id)
+
+    state = await build_session(req.resume_text, req.jd_text, session_id=req.session_id)
     orch = Orchestrator()
     orch.attach(state)
     await mgr.attach(orch)

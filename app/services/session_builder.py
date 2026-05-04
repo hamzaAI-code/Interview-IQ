@@ -57,10 +57,21 @@ async def _ensure_schema_once() -> None:
         _schema_ready = True
 
 
-async def build_session(resume_text: str, jd_text: str) -> InterviewState:
-    """Build a complete InterviewState from raw resume + JD text."""
+async def build_session(
+    resume_text: str,
+    jd_text: str,
+    *,
+    session_id: str | None = None,
+) -> InterviewState:
+    """Build a complete InterviewState from raw resume + JD text.
+
+    `session_id` is optional. When set, the caller controls the id (used for
+    cross-service correlation — e.g. tekprep owns the canonical session id and
+    asks Interview-IQ to build the technical-stage graph under the same id).
+    """
     settings = get_settings()
-    session_id = uuid4().hex[:12]
+    if not session_id:
+        session_id = uuid4().hex[:12]
     log.info("building session=%s", session_id)
 
     schema_task = asyncio.create_task(_ensure_schema_once())

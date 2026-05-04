@@ -25,6 +25,17 @@ class BuildSessionRequest(BaseModel):
         max_length=50_000,
         description="Plain text of the job description.",
     )
+    session_id: str | None = Field(
+        default=None,
+        min_length=4,
+        max_length=64,
+        description=(
+            "Optional caller-supplied session id. When set, the new graph is "
+            "keyed by this id (used for cross-service correlation, e.g. when "
+            "tekprep owns the session id and Interview-IQ runs the technical "
+            "stage). When unset, the server generates one."
+        ),
+    )
 
 
 class SubmitAnswerRequest(BaseModel):
