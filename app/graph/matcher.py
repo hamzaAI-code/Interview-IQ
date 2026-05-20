@@ -28,14 +28,22 @@ async def derive_topics(session_id: str, max_topics: int | None = None) -> list[
         OPTIONAL MATCH (c)-[ut:USES_TECH]->(target)
         OPTIONAL MATCH (c)-[kn:KNOWS]->(target)
 
-        // aggregate projects that use this target
-        OPTIONAL MATCH (c)-[:BUILT]->(p:Project)-[:USES]->(target)
+        // aggregate projects that EITHER literally use this target (USES)
+        // OR demonstrate a Capability with the same name (DEMONSTRATES). The capability
+        // path catches projects whose summary describes the work but whose literal
+        // tech list doesn't include the topic name (e.g. "model deployment" topic
+        // ↔ a project's "model deployment" capability tag).
+        OPTIONAL MATCH (c)-[:BUILT]->(p:Project)
+          WHERE (p)-[:USES]->(target)
+             OR EXISTS { (p)-[:DEMONSTRATES]->(:Capability {name: target.name}) }
         WITH j, req, target, c, hs, ut, kn,
              collect(DISTINCT CASE WHEN p IS NULL THEN null
                 ELSE {name: p.name, summary: p.summary} END) AS projects_raw
 
-        // aggregate experiences that used this target
-        OPTIONAL MATCH (c)-[:WORKED_AS]->(x:Experience)-[:USED]->(target)
+        // aggregate experiences via either USED or DEMONSTRATES (same logic).
+        OPTIONAL MATCH (c)-[:WORKED_AS]->(x:Experience)
+          WHERE (x)-[:USED]->(target)
+             OR EXISTS { (x)-[:DEMONSTRATES]->(:Capability {name: target.name}) }
         WITH j, req, target, hs, ut, kn, projects_raw,
              collect(DISTINCT CASE WHEN x IS NULL THEN null
                 ELSE {role: x.role, company: x.company, summary: x.summary} END) AS exps_raw
@@ -84,14 +92,32 @@ async def derive_topics(session_id: str, max_topics: int | None = None) -> list[
         log.warning("no topics derived for session=%s", session_id)
         return []
 
+    # Track A.3 → Track B: tag each JD-derived topic with source='jd', then
+    # append top resume-only capability topics (source='resume') so the
+    # interview also covers strengths the JD didn't explicitly call out.
+    for r in rows:
+        r["source"] = "jd"
+
+    jd_topic_names = {r["name"] for r in rows}
+    extra_slots = max(0, cap - len(rows))
+    if extra_slots > 0:
+        # Cap resume-only topics at the smaller of (remaining slots, 4) so they
+        # can't dominate. Skip capabilities the JD already covers (by name).
+        resume_rows = await _resume_only_capability_topics(
+            session_id, exclude_names=jd_topic_names,
+            limit=min(extra_slots, 4),
+        )
+        rows.extend(resume_rows)
+
     # Persist as :Topic nodes for audit + later [:ASKED] writes
     topics_payload = [
         {
             "name": r["name"],
             "kind": r["kind"],
             "importance": float(r["importance"]),
-            "must_have": bool(r["must_have"]),
-            "priority": int(r["priority"]),
+            "must_have": bool(r.get("must_have", False)),
+            "priority": int(r.get("priority", 3)),
+            "source": r.get("source", "jd"),
         }
         for r in rows
     ]
@@ -103,13 +129,15 @@ async def derive_topics(session_id: str, max_topics: int | None = None) -> list[
           SET tp.importance = t.importance,
               tp.must_have = t.must_have,
               tp.priority = t.priority,
-              tp.kind = t.kind
+              tp.kind = t.kind,
+              tp.source = t.source
         MERGE (s)-[:HAS_TOPIC]->(tp)
         WITH tp, t
         MATCH (n) WHERE n.name = t.name AND
           ((t.kind = 'Skill' AND n:Skill) OR
            (t.kind = 'Technology' AND n:Technology) OR
-           (t.kind = 'Concept' AND n:Concept))
+           (t.kind = 'Concept' AND n:Concept) OR
+           (t.kind = 'Capability' AND n:Capability))
         MERGE (tp)-[:COVERS]->(n)
         """,
         sid=session_id, topics=topics_payload,
@@ -118,21 +146,95 @@ async def derive_topics(session_id: str, max_topics: int | None = None) -> list[
     # Build a candidate_claims string per topic from row data
     enriched = []
     for r in rows:
-        if r["has_evidence"]:
+        if r.get("has_evidence"):
             proj_names = [p.get("name") for p in (r.get("projects_list") or []) if p.get("name")]
             proj_str = f"; projects: {', '.join(proj_names[:3])}" if proj_names else ""
+            yrs = r.get("years") or 0.0
+            prof = r.get("proficiency") or ""
+            ev = (r.get("evidence_text") or "").strip()
             claim = (
-                f"~{r['years']:.0f}y, {r['proficiency']}, "
-                f"{r['proj_count']} project(s); "
-                f"{(r['evidence_text'] or '').strip()[:140]}"
+                f"~{yrs:.0f}y, {prof}, "
+                f"{r.get('proj_count', 0)} project(s); "
+                f"{ev[:140]}"
                 f"{proj_str}"
             ).strip(" ;,")
         else:
             claim = "no direct evidence in resume (gap area)"
         enriched.append({**r, "candidate_claims": claim})
 
-    log.info("derived %d topics for session=%s", len(enriched), session_id)
+    log.info(
+        "derived %d topics for session=%s (jd=%d, resume=%d)",
+        len(enriched), session_id,
+        sum(1 for r in enriched if r.get("source") == "jd"),
+        sum(1 for r in enriched if r.get("source") == "resume"),
+    )
     return enriched
+
+
+async def _resume_only_capability_topics(
+    session_id: str, exclude_names: set[str], limit: int
+) -> list[dict]:
+    """Return top resume-only capabilities (not already in JD requirements) as topic rows.
+
+    Each row mirrors the shape of the JD-derived rows so downstream code is uniform.
+    Importance is bounded so JD topics always rank higher than resume-only ones at
+    similar evidence strength.
+    """
+    if limit <= 0:
+        return []
+
+    raw = await run(
+        """
+        MATCH (c:Candidate {session_id: $sid})
+        OPTIONAL MATCH (c)-[:BUILT]->(p:Project)-[:DEMONSTRATES]->(cap:Capability)
+        WITH c, cap, collect(DISTINCT CASE WHEN p IS NULL THEN null
+                ELSE {name: p.name, summary: p.summary} END) AS projects_from_p
+        OPTIONAL MATCH (c)-[:WORKED_AS]->(x:Experience)-[:DEMONSTRATES]->(cap)
+        WITH cap, projects_from_p,
+             collect(DISTINCT CASE WHEN x IS NULL THEN null
+                ELSE {role: x.role, company: x.company, summary: x.summary} END) AS exps_raw
+        WHERE cap IS NOT NULL
+        WITH cap,
+             [pp IN projects_from_p WHERE pp IS NOT NULL] AS projects_list,
+             [ee IN exps_raw WHERE ee IS NOT NULL] AS experiences_list
+        WITH cap, projects_list, experiences_list,
+             size(projects_list) AS proj_count,
+             size(experiences_list) AS exp_count
+        WHERE proj_count + exp_count > 0
+        WITH cap, projects_list, experiences_list, proj_count, exp_count,
+             // base importance — capped below typical JD topic scores
+             3.0 + (proj_count * 0.5) + (exp_count * 0.3) AS importance
+        RETURN cap.name AS name, projects_list, experiences_list,
+               proj_count, importance
+        ORDER BY importance DESC
+        LIMIT $cap
+        """,
+        sid=session_id, cap=limit * 3,  # over-fetch; we filter excludes in Python
+    )
+
+    out: list[dict] = []
+    for r in raw:
+        name = r.get("name") or ""
+        if not name or name in exclude_names:
+            continue
+        out.append({
+            "name": name,
+            "kind": "Capability",
+            "priority": 3,
+            "must_have": False,
+            "importance": float(r.get("importance") or 3.0),
+            "has_evidence": True,
+            "years": 0.0,
+            "proficiency": "",
+            "evidence_text": "",
+            "proj_count": int(r.get("proj_count") or 0),
+            "projects_list": r.get("projects_list") or [],
+            "experiences_list": r.get("experiences_list") or [],
+            "source": "resume",
+        })
+        if len(out) >= limit:
+            break
+    return out
 
 
 async def record_qa(

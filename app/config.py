@@ -24,6 +24,7 @@ class Settings:
     coverage_threshold: float
     max_followups: int
     max_topics: int
+    max_clarifications: int
 
     log_level: str
 
@@ -45,5 +46,6 @@ def get_settings() -> Settings:
         coverage_threshold=float(os.getenv("COVERAGE_THRESHOLD", "0.70")),
         max_followups=int(os.getenv("MAX_FOLLOWUPS", "3")),
         max_topics=int(os.getenv("MAX_TOPICS", "8")),
+        max_clarifications=int(os.getenv("MAX_CLARIFICATIONS", "2")),
         log_level=os.getenv("LOG_LEVEL", "INFO"),
     )

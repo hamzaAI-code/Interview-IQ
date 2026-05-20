@@ -10,6 +10,7 @@ DDL = [
     "CREATE CONSTRAINT skill_name IF NOT EXISTS FOR (s:Skill) REQUIRE s.name IS UNIQUE",
     "CREATE CONSTRAINT tech_name IF NOT EXISTS FOR (t:Technology) REQUIRE t.name IS UNIQUE",
     "CREATE CONSTRAINT concept_name IF NOT EXISTS FOR (c:Concept) REQUIRE c.name IS UNIQUE",
+    "CREATE CONSTRAINT capability_name IF NOT EXISTS FOR (cn:Capability) REQUIRE cn.name IS UNIQUE",
     "CREATE CONSTRAINT session_id IF NOT EXISTS FOR (s:Session) REQUIRE s.id IS UNIQUE",
     "CREATE INDEX topic_session IF NOT EXISTS FOR (t:Topic) ON (t.session_id, t.name)",
     "CREATE INDEX candidate_session IF NOT EXISTS FOR (c:Candidate) ON (c.session_id)",
